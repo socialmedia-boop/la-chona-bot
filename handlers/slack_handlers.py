@@ -169,7 +169,7 @@ def register_handlers(app):
             pass
 
         # Use AI brain for natural language understanding
-        reply = get_ai_response(text, user_name)
+        reply = get_ai_response(text, user_name, user_id)
         say(text=reply, thread_ts=ts)
 
     # ─────────────────────────────────────────────
@@ -192,7 +192,7 @@ def register_handlers(app):
             pass
 
         # Use AI brain for natural language understanding in DMs too
-        reply = get_ai_response(text, user_name)
+        reply = get_ai_response(text, user_name, user_id)
         say(text=reply)
 
     # ─────────────────────────────────────────────

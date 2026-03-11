@@ -2,12 +2,14 @@
 La Chona – AI Brain
 Uses OpenAI to understand and respond to natural language questions in Spanish and English.
 La Chona has a fun, warm, motivating personality and knows about the team.
+Supports multi-turn conversation memory per user.
 """
 
 import os
 import json
 import logging
 from datetime import datetime, date
+from collections import defaultdict, deque
 import pytz
 
 logger = logging.getLogger(__name__)
@@ -15,14 +17,35 @@ logger = logging.getLogger(__name__)
 # Load OpenAI — uses sandbox pre-configured client
 try:
     from openai import OpenAI
-    # Use sandbox default config (API key and base URL pre-configured)
-    client_ai = OpenAI()
+    client_ai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     AI_AVAILABLE = True
 except Exception as e:
     logger.warning(f"OpenAI not available: {e}")
     AI_AVAILABLE = False
 
 TIMEZONE = "America/Chicago"
+
+# ─────────────────────────────────────────────
+# Conversation History (in-memory, per user)
+# Stores last 10 message pairs per user
+# ─────────────────────────────────────────────
+_conversation_history = defaultdict(lambda: deque(maxlen=10))
+
+
+def add_to_history(user_id: str, role: str, content: str):
+    """Add a message to the user's conversation history."""
+    _conversation_history[user_id].append({"role": role, "content": content})
+
+
+def get_history(user_id: str) -> list:
+    """Get the conversation history for a user as a list."""
+    return list(_conversation_history[user_id])
+
+
+def clear_history(user_id: str):
+    """Clear conversation history for a user."""
+    _conversation_history[user_id].clear()
+
 
 # ─────────────────────────────────────────────
 # Load team data — from LIVE Slack profiles (with JSON fallback)
@@ -125,13 +148,7 @@ def get_scheduled_summary():
     """Return what La Chona has planned for tomorrow."""
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
-    tomorrow = now.strftime("%A")  # day name
-    
-    day_map = {
-        "Monday": "lunes", "Tuesday": "martes", "Wednesday": "miércoles",
-        "Thursday": "jueves", "Friday": "viernes", "Saturday": "sábado", "Sunday": "domingo"
-    }
-    
+
     schedule_info = {
         "lunes": "Mensaje motivacional a las 8:30 AM, reflexión de cultura de equipo a las 9:00 AM, y mención aleatoria a las 2:00 PM.",
         "martes": "Mensaje motivacional a las 8:30 AM y pregunta dinámica del equipo a las 10:00 AM.",
@@ -141,22 +158,22 @@ def get_scheduled_summary():
         "sábado": "¡Descanso! No publico mensajes los fines de semana para no interrumpir el tiempo libre del equipo. 😊",
         "domingo": "¡Descanso! No publico mensajes los fines de semana. ¡Que disfruten! 😊"
     }
-    
+
     # Get tomorrow's day
-    import calendar
     tomorrow_num = (now.weekday() + 1) % 7  # 0=Monday
     days_es = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
     tomorrow_es = days_es[tomorrow_num]
-    
+
     return tomorrow_es, schedule_info.get(tomorrow_es, "Tengo mensajes motivacionales y dinámicas planeadas.")
 
 
 # ─────────────────────────────────────────────
 # Main AI Response Function
 # ─────────────────────────────────────────────
-def get_ai_response(user_message: str, user_name: str = "") -> str:
+def get_ai_response(user_message: str, user_name: str = "", user_id: str = "") -> str:
     """
     Generate an intelligent, personalized response from La Chona using AI.
+    Maintains per-user conversation history for multi-turn conversations.
     Falls back to smart keyword matching if AI is unavailable.
     """
     members = load_team_context()
@@ -220,6 +237,7 @@ TUS FUNCIONES:
 
 REGLAS IMPORTANTES:
 - Responde siempre de forma natural, como si fuera una conversación real
+- RECUERDA el contexto de la conversación — si el usuario responde "si" o "sí", continúa desde donde quedaron
 - Si te preguntan sobre mañana o tus planes, menciona lo que tienes programado
 - Si te preguntan sobre cumpleaños, usa la información del equipo que tienes
 - Mantén las respuestas cortas y directas (máximo 3-4 oraciones)
@@ -231,16 +249,26 @@ REGLAS IMPORTANTES:
         return _smart_fallback(user_message, next_bday, tomorrow_day, tomorrow_schedule, user_name)
 
     try:
+        # Build messages with conversation history
+        history = get_history(user_id) if user_id else []
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_message})
+
         response = client_ai.chat.completions.create(
             model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
+            messages=messages,
             max_tokens=300,
             temperature=0.85,
         )
-        return response.choices[0].message.content.strip()
+        reply = response.choices[0].message.content.strip()
+
+        # Save to conversation history
+        if user_id:
+            add_to_history(user_id, "user", user_message)
+            add_to_history(user_id, "assistant", reply)
+
+        return reply
     except Exception as e:
         logger.error(f"AI response error: {e}")
         return _smart_fallback(user_message, next_bday, tomorrow_day, tomorrow_schedule, user_name)
