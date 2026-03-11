@@ -197,10 +197,11 @@ def register_handlers(app):
     @app.event("app_mention")
     def handle_mention(event, body, say, client, logger):
         import re
-        # Deduplicate using event_id (globally unique per event, same across all instances)
-        event_id = body.get("event_id", event.get("ts", ""))
-        if _is_duplicate(event_id):
-            logger.info(f"Skipping duplicate app_mention event: {event_id}")
+        # Deduplicate using message ts — the same ts appears in both app_mention and message events
+        # for the same user message, so this prevents both handlers from responding
+        msg_ts = event.get("ts", "")
+        if _is_duplicate(msg_ts):
+            logger.info(f"Skipping duplicate app_mention event ts={msg_ts}")
             return
 
         raw_text = event.get("text", "")
@@ -220,10 +221,10 @@ def register_handlers(app):
         if event.get("bot_id") or event.get("subtype") or not event.get("text", "").strip():
             return
 
-        # Deduplicate using event_id (globally unique per event, same across all instances)
-        event_id = body.get("event_id", event.get("ts", ""))
-        if _is_duplicate(event_id):
-            logger.info(f"Skipping duplicate DM event: {event_id}")
+        # Deduplicate using message ts
+        msg_ts = event.get("ts", "")
+        if _is_duplicate(msg_ts):
+            logger.info(f"Skipping duplicate DM event ts={msg_ts}")
             return
 
         text = event.get("text", "").strip()
