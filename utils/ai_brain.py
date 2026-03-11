@@ -294,7 +294,7 @@ def _smart_fallback(message: str, next_bday, tomorrow_day: str, tomorrow_schedul
         return "Aún no tengo cumpleaños registrados en el equipo. ¡Pídele al admin que los agregue en `data/team.json`! 📋"
 
     if any(w in msg for w in ["hola", "hello", "hi", "buenos", "buenas"]):
-        return f"¡Hola{name}! 👋 Soy *La Chona*, tu bot de cultura de equipo. Pregúntame lo que quieras o usa `/lachona help` para ver mis comandos. 🌟"
+        return f"¡Hola{name}! 👋 Soy *La Chona*, tu bot de cultura de equipo. ¡Pregúntame lo que quieras! 🌟"
 
     if any(w in msg for w in ["motivaci", "ánimo", "animo", "inspire"]):
         from messages.library import get_random_message
@@ -313,5 +313,5 @@ def _smart_fallback(message: str, next_bday, tomorrow_day: str, tomorrow_schedul
 
     return (
         f"¡Buena pregunta{name}! 🤔 Soy *La Chona* y estoy aquí para mantener al equipo motivado y conectado. "
-        "Usa `/lachona help` para ver todo lo que puedo hacer. 🌟"
+        "¡Dime en qué puedo ayudarte! 🌟"
     )
