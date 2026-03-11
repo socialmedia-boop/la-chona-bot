@@ -481,9 +481,9 @@ def build_team_summary_from_slack() -> str:
                 if (today.month, today.day) < (ann_date.month, ann_date.day):
                     years -= 1  # Anniversary hasn't happened yet this year
                 if years >= 1:
-                    line += f", lleva {years} año(s) en la empresa"
+                    line += f", aniversario laboral: {_month_es(ann_date.month)} {ann_date.day} ({years} año(s) en la empresa)"
                 else:
-                    line += f", nuevo integrante (menos de 1 año)"
+                    line += f", nuevo integrante, fecha de inicio: {_month_es(ann_date.month)} {ann_date.day} de {ann_date.year}"
             except Exception:
                 pass
         lines.append(line)

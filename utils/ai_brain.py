@@ -100,6 +100,22 @@ def get_next_birthday(members):
     return None
 
 
+MESES_ES = {
+    'January': 'enero', 'February': 'febrero', 'March': 'marzo',
+    'April': 'abril', 'May': 'mayo', 'June': 'junio',
+    'July': 'julio', 'August': 'agosto', 'September': 'septiembre',
+    'October': 'octubre', 'November': 'noviembre', 'December': 'diciembre'
+}
+
+
+def _fmt_date_es(d, fmt='%d de %B'):
+    """Format a date with Spanish month names."""
+    s = d.strftime(fmt)
+    for en, es in MESES_ES.items():
+        s = s.replace(en, es)
+    return s
+
+
 def build_team_summary(members):
     """Build a text summary of the team for AI context."""
     try:
@@ -124,7 +140,7 @@ def build_team_summary(members):
                 if bday_date < today:
                     bday_date = date(today.year + 1, month, day)
                 days = (bday_date - today).days
-                line += f", cumpleaños: {bday_date.strftime('%B %d')} (en {days} días)"
+                line += f", cumpleaños: {_fmt_date_es(bday_date, '%d de %B')} (en {days} días)"
             except Exception:
                 line += f", cumpleaños: {bday}"
         ann = m.get("anniversary", "")
@@ -135,9 +151,9 @@ def build_team_summary(members):
                 if (today.month, today.day) < (ann_date.month, ann_date.day):
                     years -= 1
                 if years >= 1:
-                    line += f", aniversario laboral: {ann_date.strftime('%d de %B')} ({years} año(s) en la empresa)"
+                    line += f", aniversario laboral: {_fmt_date_es(ann_date)} ({years} año(s) en la empresa)"
                 else:
-                    line += f", nuevo integrante, fecha de inicio: {ann_date.strftime('%d de %B de %Y')}"
+                    line += f", nuevo integrante, fecha de inicio: {_fmt_date_es(ann_date, '%d de %B de %Y')}"
             except Exception:
                 pass
         lines.append(line)
