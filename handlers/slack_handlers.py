@@ -5,13 +5,50 @@ Now powered by AI brain for natural language understanding.
 """
 
 import logging
-import random
+import time
+from collections import OrderedDict
 from messages.library import get_random_message, MENCIONES_TEMPLATES
 from utils.celebrations import add_member, add_achievement, get_all_active_members
 from utils.mentions import build_mention_message, format_mention
 from utils.ai_brain import get_ai_response
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# Deduplication cache: stores processed event ts values
+# Prevents duplicate responses when Slack sends the same event twice
+# ─────────────────────────────────────────────
+_processed_events = OrderedDict()
+_MAX_CACHE_SIZE = 500
+_DEDUP_WINDOW_SECONDS = 30
+
+
+def _is_duplicate(event_ts: str) -> bool:
+    """Return True if this event was already processed recently."""
+    now = time.time()
+    # Clean up old entries
+    cutoff = now - _DEDUP_WINDOW_SECONDS
+    keys_to_delete = [k for k, v in _processed_events.items() if v < cutoff]
+    for k in keys_to_delete:
+        del _processed_events[k]
+    # Trim if too large
+    while len(_processed_events) > _MAX_CACHE_SIZE:
+        _processed_events.popitem(last=False)
+    # Check and mark
+    if event_ts in _processed_events:
+        return True
+    _processed_events[event_ts] = now
+    return False
+
+
+def _get_user_name(client, user_id: str) -> str:
+    """Get the first name of a Slack user."""
+    try:
+        user_info = client.users_info(user=user_id)
+        name = user_info["user"]["profile"].get("display_name") or user_info["user"]["profile"].get("real_name", "")
+        return name.split()[0] if name else ""
+    except Exception:
+        return ""
 
 
 def register_handlers(app):
@@ -121,7 +158,7 @@ def register_handlers(app):
             if message:
                 client.chat_postMessage(channel=channel_id, text=message)
             else:
-                say(text="⚠️ No hay miembros disponibles para mencionar. Agrega miembros en `data/team.json`.")
+                say(text="⚠️ No hay miembros disponibles para mencionar.")
 
         elif text.startswith("celebrar"):
             parts = body.get("text", "").strip().split(" ", 2)
@@ -146,52 +183,47 @@ def register_handlers(app):
                 "• `reflexion` — Reflexiones de cierre de semana"
             ))
         else:
-            say(text=f"❓ Comando no reconocido: `{text}`. Escribe `/lachona help` para ver los comandos disponibles.")
+            say(text=f"❓ Comando no reconocido: `{text}`.")
 
     # ─────────────────────────────────────────────
-    # App Mention (@La Chona)
+    # App Mention (@La Chona in channels)
     # ─────────────────────────────────────────────
     @app.event("app_mention")
     def handle_mention(event, say, client, logger):
         import re
+        # Deduplicate using event timestamp
+        event_ts = event.get("ts", "")
+        if _is_duplicate(event_ts):
+            logger.info(f"Skipping duplicate app_mention event: {event_ts}")
+            return
+
         raw_text = event.get("text", "")
         text = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip()
-        ts = event.get("ts")
         user_id = event.get("user", "")
+        user_name = _get_user_name(client, user_id)
 
-        # Get user's display name for personalized response
-        user_name = ""
-        try:
-            user_info = client.users_info(user=user_id)
-            user_name = user_info["user"]["profile"].get("display_name") or user_info["user"]["profile"].get("real_name", "")
-            user_name = user_name.split()[0] if user_name else ""  # First name only
-        except Exception:
-            pass
-
-        # Use AI brain for natural language understanding
         reply = get_ai_response(text, user_name, user_id)
         say(text=reply)
 
     # ─────────────────────────────────────────────
-    # Direct Messages to La Chona
+    # Direct Messages to La Chona (DMs only)
     # ─────────────────────────────────────────────
     @app.event({"type": "message", "channel_type": "im"})
     def handle_dm(event, say, client, logger):
-        text = event.get("text", "").strip()
         # Ignore bot messages and empty messages
-        if event.get("bot_id") or event.get("subtype") or not text:
+        if event.get("bot_id") or event.get("subtype") or not event.get("text", "").strip():
             return
 
-        user_id = event.get("user", "")
-        user_name = ""
-        try:
-            user_info = client.users_info(user=user_id)
-            user_name = user_info["user"]["profile"].get("display_name") or user_info["user"]["profile"].get("real_name", "")
-            user_name = user_name.split()[0] if user_name else ""
-        except Exception:
-            pass
+        # Deduplicate using event timestamp
+        event_ts = event.get("ts", "")
+        if _is_duplicate(event_ts):
+            logger.info(f"Skipping duplicate DM event: {event_ts}")
+            return
 
-        # Use AI brain for natural language understanding in DMs too
+        text = event.get("text", "").strip()
+        user_id = event.get("user", "")
+        user_name = _get_user_name(client, user_id)
+
         reply = get_ai_response(text, user_name, user_id)
         say(text=reply)
 
@@ -214,12 +246,11 @@ def register_handlers(app):
         say(text=get_random_message("diversion"))
 
     # ─────────────────────────────────────────────
-    # Channel messages (non-DM, non-mention)
+    # Catch-all message handler (prevent unhandled event warnings)
     # ─────────────────────────────────────────────
     @app.event("message")
     def handle_message(event, logger):
-        # Silently ignore all channel messages to prevent duplicate responses.
-        # Mentions are handled by app_mention; DMs are handled by the im handler.
+        # Silently ignore — channel mentions handled by app_mention, DMs by im handler
         pass
 
     logger.info("✅ All La Chona handlers registered.")
