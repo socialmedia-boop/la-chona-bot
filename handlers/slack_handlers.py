@@ -189,12 +189,12 @@ def register_handlers(app):
     # App Mention (@La Chona in channels)
     # ─────────────────────────────────────────────
     @app.event("app_mention")
-    def handle_mention(event, say, client, logger):
+    def handle_mention(event, body, say, client, logger):
         import re
-        # Deduplicate using event timestamp
-        event_ts = event.get("ts", "")
-        if _is_duplicate(event_ts):
-            logger.info(f"Skipping duplicate app_mention event: {event_ts}")
+        # Deduplicate using event_id (globally unique per event, same across all instances)
+        event_id = body.get("event_id", event.get("ts", ""))
+        if _is_duplicate(event_id):
+            logger.info(f"Skipping duplicate app_mention event: {event_id}")
             return
 
         raw_text = event.get("text", "")
@@ -209,15 +209,15 @@ def register_handlers(app):
     # Direct Messages to La Chona (DMs only)
     # ─────────────────────────────────────────────
     @app.event({"type": "message", "channel_type": "im"})
-    def handle_dm(event, say, client, logger):
+    def handle_dm(event, body, say, client, logger):
         # Ignore bot messages and empty messages
         if event.get("bot_id") or event.get("subtype") or not event.get("text", "").strip():
             return
 
-        # Deduplicate using event timestamp
-        event_ts = event.get("ts", "")
-        if _is_duplicate(event_ts):
-            logger.info(f"Skipping duplicate DM event: {event_ts}")
+        # Deduplicate using event_id (globally unique per event, same across all instances)
+        event_id = body.get("event_id", event.get("ts", ""))
+        if _is_duplicate(event_id):
+            logger.info(f"Skipping duplicate DM event: {event_id}")
             return
 
         text = event.get("text", "").strip()
