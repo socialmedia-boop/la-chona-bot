@@ -6,6 +6,7 @@ Now powered by AI brain for natural language understanding.
 
 import logging
 import time
+import threading
 from collections import OrderedDict
 from messages.library import get_random_message, MENCIONES_TEMPLATES
 from utils.celebrations import add_member, add_achievement, get_all_active_members
@@ -21,24 +22,29 @@ logger = logging.getLogger(__name__)
 _processed_events = OrderedDict()
 _MAX_CACHE_SIZE = 500
 _DEDUP_WINDOW_SECONDS = 30
+_dedup_lock = threading.Lock()  # Thread-safe lock for deduplication
 
 
-def _is_duplicate(event_ts: str) -> bool:
-    """Return True if this event was already processed recently."""
+def _is_duplicate(event_id: str) -> bool:
+    """Return True if this event was already processed recently.
+    Thread-safe: uses a lock to prevent race conditions when two threads
+    receive the same event simultaneously (e.g., dual Socket Mode connections).
+    """
     now = time.time()
-    # Clean up old entries
-    cutoff = now - _DEDUP_WINDOW_SECONDS
-    keys_to_delete = [k for k, v in _processed_events.items() if v < cutoff]
-    for k in keys_to_delete:
-        del _processed_events[k]
-    # Trim if too large
-    while len(_processed_events) > _MAX_CACHE_SIZE:
-        _processed_events.popitem(last=False)
-    # Check and mark
-    if event_ts in _processed_events:
-        return True
-    _processed_events[event_ts] = now
-    return False
+    with _dedup_lock:
+        # Clean up old entries
+        cutoff = now - _DEDUP_WINDOW_SECONDS
+        keys_to_delete = [k for k, v in _processed_events.items() if v < cutoff]
+        for k in keys_to_delete:
+            del _processed_events[k]
+        # Trim if too large
+        while len(_processed_events) > _MAX_CACHE_SIZE:
+            _processed_events.popitem(last=False)
+        # Check and mark atomically
+        if event_id in _processed_events:
+            return True
+        _processed_events[event_id] = now
+        return False
 
 
 def _get_user_name(client, user_id: str) -> str:
