@@ -207,10 +207,12 @@ def register_handlers(app):
         raw_text = event.get("text", "")
         text = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip()
         user_id = event.get("user", "")
+        channel_id = event.get("channel", "")
         user_name = _get_user_name(client, user_id)
 
         reply = get_ai_response(text, user_name, user_id)
-        say(text=reply)
+        # Use chat_postMessage directly to avoid say() auto-threading behavior
+        client.chat_postMessage(channel=channel_id, text=reply)
 
     # ─────────────────────────────────────────────
     # Direct Messages to La Chona (DMs only)
