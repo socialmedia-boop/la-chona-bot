@@ -170,6 +170,40 @@ def get_scheduled_summary():
 # ─────────────────────────────────────────────
 # Main AI Response Function
 # ─────────────────────────────────────────────
+def _get_user_personal_info(user_name: str, user_id: str, members: list) -> str:
+    """Find the asking user's personal birthday and anniversary from the team data."""
+    if not user_name and not user_id:
+        return ""
+    for m in members:
+        # Match by slack_id first (most reliable), then by name
+        if (user_id and m.get("slack_id") == user_id) or \
+           (user_name and user_name.lower() in m.get("name", "").lower()):
+            info_parts = []
+            bday = m.get("birthday", "")
+            if bday:
+                try:
+                    month, day = map(int, bday.split("-"))
+                    from utils.slack_profiles import _month_es
+                    info_parts.append(f"cumpleaños: {_month_es(month)} {day}")
+                except Exception:
+                    info_parts.append(f"cumpleaños: {bday}")
+            ann = m.get("anniversary", "")
+            if ann:
+                try:
+                    ann_date = datetime.strptime(ann, "%Y-%m-%d").date()
+                    today = date.today()
+                    years = today.year - ann_date.year
+                    if (today.month, today.day) < (ann_date.month, ann_date.day):
+                        years -= 1
+                    from utils.slack_profiles import _month_es
+                    info_parts.append(f"aniversario laboral: {_month_es(ann_date.month)} {ann_date.day} ({years} año(s) en la empresa)")
+                except Exception:
+                    info_parts.append(f"aniversario laboral: {ann}")
+            if info_parts:
+                return f"La persona que está preguntando ({m.get('name', user_name)}) tiene: {', '.join(info_parts)}."
+    return ""
+
+
 def get_ai_response(user_message: str, user_name: str = "", user_id: str = "") -> str:
     """
     Generate an intelligent, personalized response from La Chona using AI.
@@ -180,6 +214,8 @@ def get_ai_response(user_message: str, user_name: str = "", user_id: str = "") -
     team_summary = build_team_summary(members)
     next_bday = get_next_birthday(members)
     tomorrow_day, tomorrow_schedule = get_scheduled_summary()
+    # Get the asking user's personal info (birthday, anniversary)
+    user_personal_info = _get_user_personal_info(user_name, user_id, members)
 
     # Get next anniversary (1+ full years only)
     next_ann_text = ""
@@ -222,6 +258,7 @@ INFORMACIÓN ACTUAL:
 - Plan de mañana: {tomorrow_schedule}
 - {next_bday_text}
 - {next_ann_text}
+{f'- DATOS PERSONALES DEL USUARIO QUE PREGUNTA: {user_personal_info}' if user_personal_info else ''}
 
 IMPORTANTE SOBRE ANIVERSARIOS: Solo celebra aniversarios de empleados que han completado 1 o más años completos. No menciones aniversarios de personas con menos de 1 año en la empresa.
 
