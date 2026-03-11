@@ -174,10 +174,15 @@ def _get_user_personal_info(user_name: str, user_id: str, members: list) -> str:
     """Find the asking user's personal birthday and anniversary from the team data."""
     if not user_name and not user_id:
         return ""
+    # Build name tokens from user_name for partial matching (e.g. "Janette Yanez" -> ["janette", "yanez"])
+    name_tokens = [t.lower() for t in user_name.split() if len(t) > 2] if user_name else []
     for m in members:
-        # Match by slack_id first (most reliable), then by name
-        if (user_id and m.get("slack_id") == user_id) or \
-           (user_name and user_name.lower() in m.get("name", "").lower()):
+        member_name = m.get("name", "").lower()
+        member_first = m.get("first_name", "").lower()
+        # Match by slack_id (most reliable), then full name substring, then any name token
+        name_match = user_name and (user_name.lower() in member_name or member_name in user_name.lower())
+        token_match = any(token in member_name or token in member_first for token in name_tokens)
+        if (user_id and m.get("slack_id") == user_id) or name_match or token_match:
             info_parts = []
             bday = m.get("birthday", "")
             if bday:
