@@ -244,7 +244,9 @@ REGLAS IMPORTANTES:
 - Si no sabes algo específico, sé honesta pero positiva
 - NO repitas siempre el mismo mensaje genérico — adapta tu respuesta al contexto
 - Si el usuario se llama {user_name if user_name else 'alguien del equipo'}, úsalo en la respuesta para hacerlo más personal
-- NO hagas preguntas al final de tus respuestas. Responde y termina. No digas cosas como "¿Quieres saber más?", "¿Te cuento?", "¿Algo más?", etc."""
+- NUNCA termines una respuesta con una pregunta. Esto es una regla absoluta sin excepciones.
+- Prohibido usar frases como: "¿Y tú?", "¿Cómo vas?", "¿Quieres que te comparta?", "¿Te cuento?", "¿Algo más?", "¿Qué tal?", "¿Listo?", o cualquier pregunta al final.
+- Termina siempre con una afirmación positiva, no con una pregunta."""
 
     if not AI_AVAILABLE:
         return _smart_fallback(user_message, next_bday, tomorrow_day, tomorrow_schedule, user_name)
