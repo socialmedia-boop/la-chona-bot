@@ -170,7 +170,7 @@ def register_handlers(app):
 
         # Use AI brain for natural language understanding
         reply = get_ai_response(text, user_name, user_id)
-        say(text=reply, thread_ts=ts)
+        say(text=reply)
 
     # ─────────────────────────────────────────────
     # Direct Messages to La Chona

@@ -243,7 +243,8 @@ REGLAS IMPORTANTES:
 - Mantén las respuestas cortas y directas (máximo 3-4 oraciones)
 - Si no sabes algo específico, sé honesta pero positiva
 - NO repitas siempre el mismo mensaje genérico — adapta tu respuesta al contexto
-- Si el usuario se llama {user_name if user_name else 'alguien del equipo'}, úsalo en la respuesta para hacerlo más personal"""
+- Si el usuario se llama {user_name if user_name else 'alguien del equipo'}, úsalo en la respuesta para hacerlo más personal
+- NO hagas preguntas al final de tus respuestas. Responde y termina. No digas cosas como "¿Quieres saber más?", "¿Te cuento?", "¿Algo más?", etc."""
 
     if not AI_AVAILABLE:
         return _smart_fallback(user_message, next_bday, tomorrow_day, tomorrow_schedule, user_name)
