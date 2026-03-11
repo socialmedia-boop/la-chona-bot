@@ -214,10 +214,12 @@ def register_handlers(app):
         say(text=get_random_message("diversion"))
 
     # ─────────────────────────────────────────────
-    # Ignore generic messages (prevent loops)
+    # Channel messages (non-DM, non-mention)
     # ─────────────────────────────────────────────
     @app.event("message")
     def handle_message(event, logger):
-        pass  # Silently ignore to prevent unhandled event warnings
+        # Silently ignore all channel messages to prevent duplicate responses.
+        # Mentions are handled by app_mention; DMs are handled by the im handler.
+        pass
 
     logger.info("✅ All La Chona handlers registered.")
