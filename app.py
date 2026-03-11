@@ -93,7 +93,7 @@ if __name__ == "__main__":
     logger.info("📅 Scheduler is running with all configured jobs")
     logger.info("📡 Connecting to Slack via Socket Mode...")
 
-    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+    handler = SocketModeHandler(app, SLACK_APP_TOKEN, num_connections=1)
 
     logger.info("✅ La Chona is LIVE!")
     logger.info("💬 Use /lachona help in Slack to see all commands")
