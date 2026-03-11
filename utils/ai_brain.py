@@ -266,6 +266,9 @@ REGLAS IMPORTANTES:
         )
         reply = response.choices[0].message.content.strip()
 
+        # Post-process: remove trailing questions
+        reply = _remove_trailing_question(reply)
+
         # Save to conversation history
         if user_id:
             add_to_history(user_id, "user", user_message)
@@ -275,6 +278,22 @@ REGLAS IMPORTANTES:
     except Exception as e:
         logger.error(f"AI response error: {e}")
         return _smart_fallback(user_message, next_bday, tomorrow_day, tomorrow_schedule, user_name)
+
+
+def _remove_trailing_question(text: str) -> str:
+    """
+    Remove any trailing question sentence from the end of a response.
+    This ensures La Chona never ends with a question, regardless of what the AI generates.
+    """
+    import re
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?\u2019])\s+', text.strip())
+    # Remove trailing sentences that are questions (end with ?)
+    while sentences and sentences[-1].strip().endswith('?'):
+        sentences.pop()
+    result = ' '.join(sentences).strip()
+    # If we removed everything, return the original (safety fallback)
+    return result if result else text
 
 
 def _smart_fallback(message: str, next_bday, tomorrow_day: str, tomorrow_schedule: str, user_name: str = "") -> str:
