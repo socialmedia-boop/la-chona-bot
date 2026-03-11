@@ -135,9 +135,9 @@ def build_team_summary(members):
                 if (today.month, today.day) < (ann_date.month, ann_date.day):
                     years -= 1
                 if years >= 1:
-                    line += f", lleva {years} año(s) en la empresa"
+                    line += f", aniversario laboral: {ann_date.strftime('%d de %B')} ({years} año(s) en la empresa)"
                 else:
-                    line += f", nuevo integrante (menos de 1 año)"
+                    line += f", nuevo integrante, fecha de inicio: {ann_date.strftime('%d de %B de %Y')}"
             except Exception:
                 pass
         lines.append(line)
