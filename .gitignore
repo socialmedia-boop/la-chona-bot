@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+.DS_Store
+*.pid
+nohup.out
+data/members_cache.json
