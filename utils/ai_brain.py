@@ -217,6 +217,21 @@ def get_ai_response(user_message: str, user_name: str = "", user_id: str = "") -
     # Get the asking user's personal info (birthday, anniversary)
     user_personal_info = _get_user_personal_info(user_name, user_id, members)
 
+    # Resolve any @mentions in the message to real names and their data
+    import re
+    mentioned_info = ""
+    mention_ids = re.findall(r'<@([A-Z0-9]+)>', user_message)
+    for mentioned_uid in mention_ids:
+        mentioned_data = _get_user_personal_info("", mentioned_uid, members)
+        if mentioned_data:
+            mentioned_info += f"\n- {mentioned_data}"
+        else:
+            # Try to find the name at least
+            for m in members:
+                if m.get("slack_id") == mentioned_uid:
+                    mentioned_info += f"\n- La persona mencionada es {m.get('name', mentioned_uid)}."
+                    break
+
     # Get next anniversary (1+ full years only)
     next_ann_text = ""
     try:
@@ -259,6 +274,7 @@ INFORMACIÓN ACTUAL:
 - {next_bday_text}
 - {next_ann_text}
 {f'- DATOS PERSONALES DEL USUARIO QUE PREGUNTA: {user_personal_info}' if user_personal_info else ''}
+{f'- DATOS DE PERSONAS MENCIONADAS EN EL MENSAJE: {mentioned_info}' if mentioned_info else ''}
 
 IMPORTANTE SOBRE ANIVERSARIOS: Solo celebra aniversarios de empleados que han completado 1 o más años completos. No menciones aniversarios de personas con menos de 1 año en la empresa.
 
