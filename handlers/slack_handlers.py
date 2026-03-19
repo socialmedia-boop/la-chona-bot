@@ -210,9 +210,17 @@ def register_handlers(app):
         channel_id = event.get("channel", "")
         user_name = _get_user_name(client, user_id)
 
+        # Fix: detect if the mention is inside a thread and reply in the same thread.
+        # thread_ts is present when the message belongs to an existing thread.
+        # If not in a thread, use the message ts to start a new thread on that message.
+        thread_ts = event.get("thread_ts") or event.get("ts")
+
         reply = get_ai_response(text, user_name, user_id)
-        # Use chat_postMessage directly to avoid say() auto-threading behavior
-        client.chat_postMessage(channel=channel_id, text=reply)
+        client.chat_postMessage(
+            channel=channel_id,
+            text=reply,
+            thread_ts=thread_ts
+        )
 
     # ─────────────────────────────────────────────
     # Direct Messages to La Chona (DMs only)
