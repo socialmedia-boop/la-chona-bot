@@ -40,7 +40,9 @@ def _save_to_disk(members: list):
 
 
 def _load_from_disk():
-    """Load members from disk cache if it exists and is fresh enough (under 2 hours)."""
+    """Load members from disk cache if it exists and is fresh enough (under 2 hours).
+    Also logs clearly whenever the cache is stale enough that it's likely hiding
+    recently-added or recently-corrected birthdays/anniversaries."""
     try:
         import time
         if not os.path.exists(DISK_CACHE_PATH):
@@ -48,6 +50,11 @@ def _load_from_disk():
         with open(DISK_CACHE_PATH, "r", encoding="utf-8") as f:
             cache_data = json.load(f)
         age = time.time() - cache_data.get("timestamp", 0)
+        if age >= 1800:  # 30+ min old — flag it, even if we still use it below
+            logger.warning(
+                f"⚠️ Disk member cache is {int(age // 60)}min old. If someone's birthday/anniversary "
+                f"was just added or fixed in Slack, it may not show up until the next successful refresh."
+            )
         if age < 7200:  # 2 hours
             members = cache_data.get("members", [])
             if members:
@@ -58,16 +65,42 @@ def _load_from_disk():
     return None
 
 
-def preload_members_background():
-    """Pre-load all member profiles. Loads from disk instantly, then refreshes from Slack in background."""
+def preload_members_background(force_sync: bool = False):
+    """Pre-load all member profiles.
+
+    Normally: loads from disk instantly (non-blocking), then refreshes from
+    Slack in a background thread.
+
+    If force_sync=True (used at bot startup): blocks and fetches fresh data
+    directly from Slack first, so the very first birthday/anniversary check
+    of the day doesn't run against a stale or missing disk cache. Falls back
+    to the disk cache / team.json automatically if the live fetch fails.
+    """
+    import time
     import threading
     global _preloaded_members, _preload_done
+
+    if force_sync:
+        logger.info("🔄 Startup: fetching fresh team profiles from Slack before first celebration check...")
+        members = _fetch_from_slack()
+        if members:
+            _preloaded_members = members
+            _preload_done = True
+            logger.info(f"✅ Startup fetch got {len(members)} members directly from Slack")
+            return
+        logger.warning("Startup Slack fetch returned nothing — falling back to disk cache/team.json")
+        # _fetch_from_slack() already falls back to team.json internally when it
+        # can't reach Slack at all, so _preloaded_members may already be set here.
+        if _preloaded_members:
+            return
 
     # Step 1: Load from disk immediately (instant, no API calls)
     disk_members = _load_from_disk()
     if disk_members:
         _preloaded_members = disk_members
         _preload_done = True
+        _cache["members"] = disk_members
+        _cache_time["members"] = time.time()
         logger.info(f"⚡ Instant startup: {len(disk_members)} members loaded from disk cache")
 
     # Step 2: Refresh from Slack API in background thread
@@ -121,6 +154,49 @@ def fetch_all_members():
     return _load_from_json()
 
 
+def _get_full_profile_with_retry(client, user_id: str, max_retries: int = 3):
+    """Fetch a user's full profile (custom fields incl. birthday/anniversary).
+
+    Slack rate-limits users.profile.get fairly aggressively, and when this
+    workspace refreshes every member's profile in a loop, hitting that limit
+    used to fail *silently* — the code would just fall back to the basic
+    profile (no custom fields), so the person's birthday/anniversary quietly
+    disappeared for that refresh. This now respects Retry-After and retries,
+    and logs clearly if it truly fails.
+    """
+    import time
+    try:
+        from slack_sdk.errors import SlackApiError
+    except Exception:
+        SlackApiError = Exception  # pragma: no cover - slack_sdk always available in prod
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            full = client.users_profile_get(user=user_id)
+            return full.get("profile")
+        except SlackApiError as e:
+            response = getattr(e, "response", None)
+            error_code = response.get("error") if response else str(e)
+            if error_code == "ratelimited" and attempt < max_retries:
+                retry_after = 1
+                try:
+                    retry_after = int(response.headers.get("Retry-After", "1"))
+                except Exception:
+                    pass
+                logger.warning(
+                    f"Rate-limited fetching profile for {user_id} (attempt {attempt}/{max_retries}); "
+                    f"retrying in {retry_after}s"
+                )
+                time.sleep(retry_after)
+                continue
+            logger.warning(f"Could not fetch full profile for {user_id}: {error_code}")
+            return None
+        except Exception as e:
+            logger.warning(f"Unexpected error fetching full profile for {user_id}: {e}")
+            return None
+    return None
+
+
 def _fetch_from_slack():
     """Internal: fetch all member profiles from Slack API."""
     import time
@@ -129,6 +205,9 @@ def _fetch_from_slack():
         client = get_slack_client()
         members = []
         cursor = None
+        profile_fetch_failures = []
+        missing_birthday = []
+        missing_anniversary = []
 
         while True:
             kwargs = {"limit": 200}
@@ -152,15 +231,19 @@ def _fetch_from_slack():
                     continue
 
                 # Fetch full profile with custom fields (birthday, anniversary)
-                try:
-                    full = client.users_profile_get(user=user_id)
-                    profile = full.get("profile", profile)
-                except Exception:
-                    pass  # Use basic profile if full fetch fails
+                full_profile = _get_full_profile_with_retry(client, user_id)
+                if full_profile is not None:
+                    profile = full_profile
+                else:
+                    profile_fetch_failures.append(f"{name} ({user_id})")
 
                 # Extract birthday and anniversary from custom fields
                 birthday = _extract_birthday(profile)
                 anniversary = _extract_anniversary(profile)
+                if not birthday:
+                    missing_birthday.append(name)
+                if not anniversary:
+                    missing_anniversary.append(name)
 
                 members.append({
                     "name": name,
@@ -170,6 +253,13 @@ def _fetch_from_slack():
                     "anniversary": anniversary,  # YYYY-MM-DD or empty
                     "role": profile.get("title", "Team Member") or "Team Member",
                     "email": profile.get("email", ""),
+                    "image_url": (
+                        profile.get("image_original")
+                        or profile.get("image_512")
+                        or profile.get("image_192")
+                        or profile.get("image_72")
+                        or ""
+                    ),
                     "active": True
                 })
 
@@ -189,6 +279,15 @@ def _fetch_from_slack():
         _save_to_disk(members)  # Persist to disk for instant next startup
 
         logger.info(f"✅ Fetched {len(members)} members from Slack profiles")
+        if profile_fetch_failures:
+            logger.warning(
+                f"⚠️ Could not fetch full profile (birthday/anniversary fields invisible) for "
+                f"{len(profile_fetch_failures)} member(s): {', '.join(profile_fetch_failures)}"
+            )
+        if missing_birthday:
+            logger.info(f"🎂 No birthday on file for {len(missing_birthday)} member(s): {', '.join(missing_birthday)}")
+        if missing_anniversary:
+            logger.info(f"🏆 No anniversary/start date on file for {len(missing_anniversary)} member(s): {', '.join(missing_anniversary)}")
         return members
 
     except Exception as e:
@@ -222,7 +321,7 @@ def _extract_birthday(profile: dict) -> str:
             if isinstance(field_data, dict):
                 label = field_data.get("label", "").lower()
                 value = field_data.get("value", "")
-                if any(kw in label for kw in ["birthday", "birth", "cumplea\u00f1os", "cumpleanos", "nacimiento"]):
+                if any(kw in label for kw in ["birthday", "birth", "cumpleaños", "cumpleanos", "nacimiento"]):
                     if value:
                         return _normalize_birthday(value)
 
@@ -272,11 +371,14 @@ def _normalize_birthday(value: str) -> str:
 
     value = value.strip()
 
-    # Already MM-DD format
-    if len(value) == 5 and value[2] in ["-", "/"]:
+    # MM-DD or M-D style (with or without zero-padding), e.g. "03-18", "3/18"
+    # Previously this only matched a 5-character string (zero-padded), so a
+    # birthday entered as "3/18" instead of "03/18" was silently dropped.
+    import re as _re
+    bare_match = _re.match(r"^(\d{1,2})[-/](\d{1,2})$", value)
+    if bare_match:
         try:
-            parts = value.replace("/", "-").split("-")
-            month, day = int(parts[0]), int(parts[1])
+            month, day = int(bare_match.group(1)), int(bare_match.group(2))
             if 1 <= month <= 12 and 1 <= day <= 31:
                 return f"{month:02d}-{day:02d}"
         except Exception:

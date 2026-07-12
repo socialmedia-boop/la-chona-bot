@@ -23,16 +23,26 @@ BOT_EMOJI = "🌟"
 
 # ─────────────────────────────────────────────────────────────
 # CHANNELS CONFIGURATION
-# Add the Slack channel IDs where the bot should post.
-# You can find channel IDs by right-clicking a channel → "Copy link"
-# The ID is the last part of the URL (e.g., C0123456789)
+# La Chona should only ever post in ONE channel. Set the exact name below
+# (no "#"). At startup/first use, the bot resolves this name to a channel
+# ID via the Slack API and caches it — if it can't find or isn't a member
+# of that channel, it logs a loud error instead of silently posting nowhere
+# or guessing a different channel.
+#
+# If you'd rather pin the ID directly (most reliable — skips name lookup
+# entirely), set CELEBRATION_CHANNEL below to the channel ID
+# (e.g. "C0123456789", found via channel → "Copy link").
 # ─────────────────────────────────────────────────────────────
+PRIMARY_CHANNEL_NAME = "company-recognition"
+
+# Legacy/override list — left empty on purpose. All posting now goes
+# through PRIMARY_CHANNEL_NAME / CELEBRATION_CHANNEL below.
 SOCIAL_CHANNELS = [
-    # "C0123456789",   # #equipo-social
-    # "C9876543210",   # #general
+    # "C0123456789",   # optional explicit channel ID override
 ]
 
-# Channel for celebrations (birthdays, anniversaries, achievements)
+# Channel for celebrations (birthdays, anniversaries, achievements).
+# Leave blank to auto-resolve PRIMARY_CHANNEL_NAME by name instead.
 CELEBRATION_CHANNEL = ""  # e.g., "C0123456789"
 
 # ─────────────────────────────────────────────────────────────
@@ -105,19 +115,19 @@ SCHEDULE = {
         "hour": 14,
         "minute": 0,
     },
-    # Birthday check (every day at 8:00 AM)
+    # Birthday check (every day at 9:00 AM)
     "birthday_check": {
         "enabled": True,
         "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
-        "hour": 8,
+        "hour": 9,
         "minute": 0,
     },
-    # Anniversary check (every day at 8:05 AM)
+    # Anniversary check (every day at 9:00 AM)
     "anniversary_check": {
         "enabled": True,
-        "days": ["mon", "tue", "wed", "thu", "fri"],
-        "hour": 8,
-        "minute": 5,
+        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "hour": 9,
+        "minute": 0,
     },
 }
 
@@ -127,14 +137,4 @@ SCHEDULE = {
 # How many members to mention at once (1 = one at a time)
 MENTION_COUNT = 1
 
-# Exclude these Slack user IDs from random mentions (e.g., bots, admins)
-MENTION_EXCLUDE_IDS = []
-
-# ─────────────────────────────────────────────────────────────
-# ANTI-SPAM SETTINGS
-# ─────────────────────────────────────────────────────────────
-# Minimum hours between posts in the same channel
-MIN_HOURS_BETWEEN_POSTS = 2
-
-# Maximum posts per day per channel
-MAX_POSTS_PER_DAY = 4
+# Exclude these Slack user IDs from random me

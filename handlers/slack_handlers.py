@@ -5,6 +5,7 @@ Now powered by AI brain for natural language understanding.
 """
 
 import logging
+import re
 import time
 import threading
 from collections import OrderedDict
@@ -55,6 +56,67 @@ def _get_user_name(client, user_id: str) -> str:
         return name.split()[0] if name else ""
     except Exception:
         return ""
+
+
+def _is_birthday_wish(text: str) -> bool:
+    """Return True when the user message is just a birthday wish and should not trigger a bot reply."""
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+
+    normalized = re.sub(r"[^a-z0-9áéíóúñü\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    birthday_patterns = [
+        r"^happy birthday(?:\s+\w+){0,4}$",
+        r"^belated happy birthday(?:\s+\w+){0,4}$",
+        r"^feliz cumple(?:años|anos)?(?:\s+\w+){0,4}$",
+        r"^feliz cumpleaños(?:\s+\w+){0,4}$",
+        r"^feliz cumpleanos(?:\s+\w+){0,4}$",
+        r"^birthday wishes(?:\s+\w+){0,4}$",
+    ]
+    return any(re.match(pattern, normalized) for pattern in birthday_patterns)
+
+
+# ─────────────────────────────────────────────
+# Recognition-request detection
+# On purpose, this is the ONLY thing La Chona reacts to when mentioned or
+# DM'd. She should not hold general conversation (that was explicitly turned
+# off because she was chiming in on everything). But she should still act
+# when someone directly asks her to check/post birthdays or anniversaries.
+# ─────────────────────────────────────────────
+_RECOGNITION_KEYWORDS = [
+    "birthday", "bday", "anniversary", "work anniversary",
+    "recogni", "celebrat", "shoutout", "shout out",
+    "cumpleaños", "cumpleanos", "cumple", "aniversario",
+    "reconoc", "celebrar", "felicit",
+]
+
+
+def _is_recognition_request(text: str) -> bool:
+    """Return True if the message is asking La Chona to check/post a
+    birthday or work-anniversary recognition."""
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    normalized = re.sub(r"<@[a-z0-9]+>", " ", normalized)
+    return any(keyword in normalized for keyword in _RECOGNITION_KEYWORDS)
+
+
+def _handle_recognition_request(client, logger) -> str:
+    """Run an on-demand birthday/anniversary check and return a short reply
+    describing what was posted (or that there's nothing to post)."""
+    from utils.scheduler import check_recognitions_now
+    try:
+        result = check_recognitions_now(client)
+    except Exception as e:
+        logger.error(f"Error running on-demand recognition check: {e}")
+        return "⚠️ No pude revisar cumpleaños/aniversarios ahora mismo — inténtalo de nuevo en un momento."
+
+    posted_names = result.get("birthdays", []) + result.get("anniversaries", [])
+    if posted_names:
+        return f"🎉 ¡Listo! Publiqué el reconocimiento de: {', '.join(posted_names)}."
+    return "📋 Ya revisé — no hay cumpleaños ni aniversarios pendientes de publicar hoy (o ya se publicaron)."
 
 
 def register_handlers(app):
@@ -171,9 +233,9 @@ def register_handlers(app):
             if len(parts) >= 3:
                 nombre = parts[1]
                 logro = parts[2]
-                from messages.library import get_achievement_message
-                message = get_achievement_message(nombre, logro)
-                client.chat_postMessage(channel=channel_id, text=message)
+                from utils.celebrations import build_achievement_message
+                payload = build_achievement_message(nombre, logro)
+                client.chat_postMessage(channel=channel_id, **payload)
             else:
                 say(text="⚠️ Uso: `/lachona celebrar @nombre Descripción del logro`")
 
@@ -196,53 +258,62 @@ def register_handlers(app):
     # ─────────────────────────────────────────────
     @app.event("app_mention")
     def handle_mention(event, body, say, client, logger):
-        import re
-        # Deduplicate using message ts — the same ts appears in both app_mention and message events
-        # for the same user message, so this prevents both handlers from responding
+        # La Chona does NOT hold general conversation when mentioned — that was
+        # intentionally turned off because she was chiming in on everything.
+        # The one thing she DOES react to is a direct ask to check/post a
+        # birthday or work-anniversary recognition.
         msg_ts = event.get("ts", "")
         if _is_duplicate(msg_ts):
             logger.info(f"Skipping duplicate app_mention event ts={msg_ts}")
             return
 
+        user_id = event.get("user", "")
         raw_text = event.get("text", "")
         text = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip()
-        user_id = event.get("user", "")
         channel_id = event.get("channel", "")
-        user_name = _get_user_name(client, user_id)
-
-        # Fix: detect if the mention is inside a thread and reply in the same thread.
-        # thread_ts is present when the message belongs to an existing thread.
-        # If not in a thread, use the message ts to start a new thread on that message.
         thread_ts = event.get("thread_ts") or event.get("ts")
 
-        reply = get_ai_response(text, user_name, user_id)
-        client.chat_postMessage(
-            channel=channel_id,
-            text=reply,
-            thread_ts=thread_ts
-        )
+        if _is_recognition_request(text):
+            logger.info(f"Recognition request from user={user_id}: {text}")
+            reply = _handle_recognition_request(client, logger)
+            try:
+                client.chat_postMessage(channel=channel_id, text=reply, thread_ts=thread_ts)
+            except Exception as e:
+                logger.error(f"Error replying to recognition request: {e}")
+            return
+
+        logger.info(f"Ignoring app mention from user={user_id} (not a recognition request): {text}")
+        return
 
     # ─────────────────────────────────────────────
     # Direct Messages to La Chona (DMs only)
     # ─────────────────────────────────────────────
     @app.event({"type": "message", "channel_type": "im"})
     def handle_dm(event, body, say, client, logger):
-        # Ignore bot messages and empty messages
+        # Same policy as mentions: no general chat, but she will act on a
+        # direct ask to check/post birthdays or work anniversaries.
         if event.get("bot_id") or event.get("subtype") or not event.get("text", "").strip():
             return
 
-        # Deduplicate using message ts
         msg_ts = event.get("ts", "")
         if _is_duplicate(msg_ts):
             logger.info(f"Skipping duplicate DM event ts={msg_ts}")
             return
 
-        text = event.get("text", "").strip()
         user_id = event.get("user", "")
-        user_name = _get_user_name(client, user_id)
+        text = event.get("text", "").strip()
 
-        reply = get_ai_response(text, user_name, user_id)
-        say(text=reply)
+        if _is_recognition_request(text):
+            logger.info(f"Recognition request via DM from user={user_id}: {text}")
+            reply = _handle_recognition_request(client, logger)
+            try:
+                say(text=reply)
+            except Exception as e:
+                logger.error(f"Error replying to DM recognition request: {e}")
+            return
+
+        logger.info(f"Ignoring direct message from user={user_id} (not a recognition request): {text}")
+        return
 
     # ─────────────────────────────────────────────
     # Button Action Handlers (App Home previews)

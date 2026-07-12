@@ -14,8 +14,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pytz import timezone as pytz_timezone
 
-from config.settings import SCHEDULE, TIMEZONE, SOCIAL_CHANNELS, CELEBRATION_CHANNEL
-from messages.library import get_random_message, get_birthday_message, get_anniversary_message, get_achievement_message
+from config.settings import SCHEDULE, TIMEZONE, SOCIAL_CHANNELS, CELEBRATION_CHANNEL, PRIMARY_CHANNEL_NAME
+from messages.library import get_random_message
 from utils.celebrations import get_todays_birthdays, get_todays_anniversaries, get_pending_achievements, mark_achievement_announced
 
 logger = logging.getLogger(__name__)
@@ -129,64 +129,73 @@ def setup_scheduler(app, client):
                 replace_existing=True
             )
 
-    # ─── Birthday Check — Primary (8:00 AM daily) ────────────
+    # ─── Birthday Check — Primary (configured daily time) ────
     bday_config = SCHEDULE.get("birthday_check", {})
+    bday_days = days_to_cron(bday_config.get("days", ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]))
+    bday_hour = bday_config.get("hour", 9)
+    bday_minute = bday_config.get("minute", 0)
+    bday_backup_hour = (bday_hour + ((bday_minute + 30) // 60)) % 24
+    bday_backup_minute = (bday_minute + 30) % 60
     if bday_config.get("enabled", True):
         scheduler.add_job(
             func=lambda c=client: _check_birthdays(c),
             trigger=CronTrigger(
-                day_of_week="mon-sun",
-                hour=bday_config.get("hour", 8),
-                minute=bday_config.get("minute", 0),
+                day_of_week=bday_days,
+                hour=bday_hour,
+                minute=bday_minute,
                 timezone=tz
             ),
             id="birthday_check",
-            name="Birthday Check (8 AM)",
+            name=f"Birthday Check ({bday_hour:02d}:{bday_minute:02d})",
             replace_existing=True
         )
 
-    # ─── Birthday Check — Backup (9:00 AM daily) ─────────────
-    # Safety net: runs 1 hour later in case the bot restarted after 8 AM
+    # ─── Birthday Check — Backup (30 minutes later) ───────────
     scheduler.add_job(
         func=lambda c=client: _check_birthdays(c),
         trigger=CronTrigger(
-            day_of_week="mon-sun",
-            hour=9,
-            minute=0,
+            day_of_week=bday_days,
+            hour=bday_backup_hour,
+            minute=bday_backup_minute,
             timezone=tz
         ),
         id="birthday_check_backup",
-        name="Birthday Check Backup (9 AM)",
+        name="Birthday Check Backup",
         replace_existing=True
     )
 
-    # ─── Anniversary Check — Primary (8:05 AM weekdays) ──────
+    # ─── Anniversary Check — Primary (configured daily time) ──
     ann_config = SCHEDULE.get("anniversary_check", {})
+    ann_days = days_to_cron(ann_config.get("days", ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]))
+    ann_hour = ann_config.get("hour", 9)
+    ann_minute = ann_config.get("minute", 0)
+    ann_backup_hour = (ann_hour + ((ann_minute + 30) // 60)) % 24
+    ann_backup_minute = (ann_minute + 30) % 60
     if ann_config.get("enabled", True):
         scheduler.add_job(
             func=lambda c=client: _check_anniversaries(c),
             trigger=CronTrigger(
-                day_of_week="mon-fri",
-                hour=ann_config.get("hour", 8),
-                minute=ann_config.get("minute", 5),
+                day_of_week=ann_days,
+                hour=ann_hour,
+                minute=ann_minute,
                 timezone=tz
             ),
             id="anniversary_check",
-            name="Anniversary Check (8:05 AM)",
+            name=f"Anniversary Check ({ann_hour:02d}:{ann_minute:02d})",
             replace_existing=True
         )
 
-    # ─── Anniversary Check — Backup (9:05 AM weekdays) ───────
+    # ─── Anniversary Check — Backup (30 minutes later) ────────
     scheduler.add_job(
         func=lambda c=client: _check_anniversaries(c),
         trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=9,
-            minute=5,
+            day_of_week=ann_days,
+            hour=ann_backup_hour,
+            minute=ann_backup_minute,
             timezone=tz
         ),
         id="anniversary_check_backup",
-        name="Anniversary Check Backup (9:05 AM)",
+        name="Anniversary Check Backup",
         replace_existing=True
     )
 
@@ -206,26 +215,82 @@ def setup_scheduler(app, client):
 
     # ─── Startup Check ────────────────────────────────────────
     # Run immediately on startup so we never miss a celebration
-    # if the bot restarts after the scheduled time
+    # if the bot restarts after the scheduled time. Force a synchronous,
+    # fresh pull from Slack first — the background preloader is fire-and-
+    # forget, so without this the very first check after a restart could
+    # run against a stale or empty disk cache and miss someone.
     logger.info("🔍 Running startup celebration check...")
+    try:
+        from utils.slack_profiles import preload_members_background
+        preload_members_background(force_sync=True)
+    except Exception as e:
+        logger.warning(f"Could not force-refresh member data at startup: {e}")
     _check_birthdays(client)
     _check_anniversaries(client)
 
     return scheduler
 
 
+# Cached resolved channel ID for PRIMARY_CHANNEL_NAME, so we don't hit the
+# Slack API on every single post.
+_resolved_channel_id = None
+_resolved_channel_checked = False
+
+
+def _resolve_primary_channel(client) -> str:
+    """Resolve PRIMARY_CHANNEL_NAME (e.g. 'company-recognition') to a channel ID.
+
+    La Chona should only ever post in this one channel. If it can't be found,
+    or the bot hasn't been invited to it, this logs a loud, actionable error
+    instead of silently posting nowhere (or guessing a different channel)."""
+    global _resolved_channel_id, _resolved_channel_checked
+
+    if _resolved_channel_id:
+        return _resolved_channel_id
+
+    target_name = (PRIMARY_CHANNEL_NAME or "").lstrip("#").strip().lower()
+    if not target_name:
+        return ""
+
+    try:
+        cursor = None
+        while True:
+            kwargs = {"types": "public_channel,private_channel", "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = client.conversations_list(**kwargs)
+            for ch in result.get("channels", []):
+                if ch.get("name", "").lower() == target_name:
+                    _resolved_channel_id = ch["id"]
+                    logger.info(f"✅ Resolved channel '#{target_name}' → {ch['id']}")
+                    return _resolved_channel_id
+            cursor = result.get("response_metadata", {}).get("next_cursor", "")
+            if not cursor:
+                break
+    except Exception as e:
+        logger.error(f"Error looking up channel '#{target_name}': {e}")
+
+    if not _resolved_channel_checked:
+        logger.error(
+            f"❌ Could not find a channel named '#{target_name}'. La Chona will NOT post "
+            f"anything until this is fixed. Check that the name is spelled correctly and "
+            f"that La Chona has been invited to that channel (or set CELEBRATION_CHANNEL "
+            f"to the channel ID directly in config/settings.py)."
+        )
+        _resolved_channel_checked = True
+    return ""
+
+
 def _get_target_channels(client) -> list[str]:
-    """Get the list of channels to post to, auto-discovering if not configured."""
+    """Get the list of channel(s) to post to. Pinned to the single configured
+    channel — explicit CELEBRATION_CHANNEL/SOCIAL_CHANNELS override it if set,
+    otherwise it's resolved by name from PRIMARY_CHANNEL_NAME."""
     if SOCIAL_CHANNELS:
         return SOCIAL_CHANNELS
-    try:
-        result = client.conversations_list(types="public_channel", limit=200)
-        for ch in result.get("channels", []):
-            if ch["name"] in ("general", "equipo-social", "social", "team-culture"):
-                return [ch["id"]]
-    except Exception as e:
-        logger.error(f"Error discovering channels: {e}")
-    return []
+    if CELEBRATION_CHANNEL:
+        return [CELEBRATION_CHANNEL]
+    channel_id = _resolve_primary_channel(client)
+    return [channel_id] if channel_id else []
 
 
 def _post_category_message(category: str, client):
@@ -273,18 +338,20 @@ def _post_random_mention(client):
             logger.error(f"Error posting mention to {channel_id}: {e}")
 
 
-def _check_birthdays(client):
+def _check_birthdays(client) -> list[str]:
     """Check for today's birthdays and post celebration messages.
-    Uses daily state file to avoid sending duplicate messages on restart."""
+    Uses daily state file to avoid sending duplicate messages on restart.
+    Returns the list of member names actually posted (empty if none / already sent)."""
+    posted = []
     birthdays = get_todays_birthdays()
     if not birthdays:
         logger.info("🎂 No birthdays today.")
-        return
+        return posted
 
     channel = CELEBRATION_CHANNEL or (_get_target_channels(client) or [None])[0]
     if not channel:
-        logger.warning("No celebration channel configured.")
-        return
+        logger.warning("No celebration channel configured — birthday message(s) NOT sent.")
+        return posted
 
     from utils.celebrations import build_birthday_message
     for member in birthdays:
@@ -292,27 +359,31 @@ def _check_birthdays(client):
         if _was_birthday_sent_today(slack_id):
             logger.info(f"🎂 Birthday for {member['name']} already sent today — skipping.")
             continue
-        message = build_birthday_message(member)
+        payload = build_birthday_message(member)
         try:
-            client.chat_postMessage(channel=channel, text=message)
+            client.chat_postMessage(channel=channel, **payload)
             _mark_birthday_sent(slack_id)
+            posted.append(member["name"])
             logger.info(f"🎂 Birthday message sent for {member['name']}")
         except Exception as e:
             logger.error(f"Error sending birthday message: {e}")
+    return posted
 
 
-def _check_anniversaries(client):
+def _check_anniversaries(client) -> list[str]:
     """Check for today's work anniversaries and post celebration messages.
-    Uses daily state file to avoid sending duplicate messages on restart."""
+    Uses daily state file to avoid sending duplicate messages on restart.
+    Returns the list of member names actually posted (empty if none / already sent)."""
+    posted = []
     anniversaries = get_todays_anniversaries()
     if not anniversaries:
         logger.info("🏆 No anniversaries today.")
-        return
+        return posted
 
     channel = CELEBRATION_CHANNEL or (_get_target_channels(client) or [None])[0]
     if not channel:
-        logger.warning("No celebration channel configured.")
-        return
+        logger.warning("No celebration channel configured — anniversary message(s) NOT sent.")
+        return posted
 
     from utils.celebrations import build_anniversary_message
     for member in anniversaries:
@@ -320,13 +391,30 @@ def _check_anniversaries(client):
         if _was_anniversary_sent_today(slack_id):
             logger.info(f"🏆 Anniversary for {member['name']} already sent today — skipping.")
             continue
-        message = build_anniversary_message(member)
+        payload = build_anniversary_message(member)
         try:
-            client.chat_postMessage(channel=channel, text=message)
+            client.chat_postMessage(channel=channel, **payload)
             _mark_anniversary_sent(slack_id)
+            posted.append(member["name"])
             logger.info(f"🏆 Anniversary message sent for {member['name']} ({member['years']} years)")
         except Exception as e:
             logger.error(f"Error sending anniversary message: {e}")
+    return posted
+
+
+def check_recognitions_now(client) -> dict:
+    """Run an on-demand birthday + anniversary check right now.
+
+    Used when someone @mentions or DMs La Chona asking her to check/recognize
+    birthdays or anniversaries. Shares the same daily de-dup state as the
+    scheduled checks, so this can't cause a double-post, and any scheduled
+    run later that day will skip whoever was already covered here.
+    Returns {"birthdays": [names], "anniversaries": [names]}.
+    """
+    return {
+        "birthdays": _check_birthdays(client),
+        "anniversaries": _check_anniversaries(client),
+    }
 
 
 def _check_achievements(client):
@@ -339,12 +427,16 @@ def _check_achievements(client):
     if not channel:
         return
 
+    from utils.celebrations import build_achievement_message
     for achievement in achievements:
-        message = get_achievement_message(achievement["member_name"], achievement["achievement"])
-        if achievement.get("slack_id"):
-            message = message.replace(achievement["member_name"], f"<@{achievement['slack_id']}>")
+        payload = build_achievement_message(
+            achievement["member_name"],
+            achievement["achievement"],
+            slack_id=achievement.get("slack_id", ""),
+            image_url=achievement.get("image_url", "")
+        )
         try:
-            client.chat_postMessage(channel=channel, text=message)
+            client.chat_postMessage(channel=channel, **payload)
             mark_achievement_announced(achievement["achievement"], achievement["member_name"])
             logger.info(f"⭐ Achievement announced for {achievement['member_name']}")
         except Exception as e:
